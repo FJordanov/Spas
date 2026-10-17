@@ -5,7 +5,7 @@ const IS_TEST_BUILD = true
 const HOLD_MS = 1500
 const SEND_DELAY_MS = 4000
 
-type ScreenState = 'idle' | 'holding' | 'sending' | 'settings' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
+type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
 type LocationStatus = 'checking' | 'granted' | 'prompt' | 'denied' | 'unsupported'
 
 function getDeviceId() {
@@ -19,6 +19,8 @@ function getDeviceId() {
 
 export default function App() {
   const [screenState, setScreenState] = useState<ScreenState>('idle')
+  const [settingsReturnTo, setSettingsReturnTo] = useState<ScreenState>('idle')
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [locationStatus, setLocationStatus] = useState<LocationStatus>('checking')
   const [locationMessage, setLocationMessage] = useState('')
   const holdTimeout = useRef<number | null>(null)
@@ -268,22 +270,26 @@ export default function App() {
         <span className="brand">Spas Sender</span>
         <div className="header-actions">
           <span className="ready-indicator"><span className="ready-dot" />Ready</span>
-          <button
-            className="settings-button"
-            type="button"
-            aria-label="Settings"
-            disabled={screenState !== 'idle'}
-            onClick={() => {
-              if (screenState === 'idle') setScreenState('settings')
-            }}
-          >
-            <span aria-hidden="true">⚙</span>
-          </button>
+          {(screenState === 'idle' || screenState === 'sent' || screenState === 'error' || screenState === 'insert-error') && (
+            <button
+              className="settings-button"
+              type="button"
+              aria-label="Settings"
+              disabled={settingsOpen}
+              onClick={() => {
+                if (settingsOpen) return
+                setSettingsReturnTo(screenState)
+                setSettingsOpen(true)
+              }}
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+          )}
         </div>
       </header>
 
       <section className="action-area" aria-live="polite">
-        {screenState === 'settings' ? (
+        {settingsOpen ? (
           <div className="status-panel">
             <h1 className="status-label">Settings</h1>
             <p className="status-message">Test mode and backend options will appear here.</p>
@@ -303,7 +309,16 @@ export default function App() {
                 </p>
               )}
             </div>
-            <button className="cancel-button" type="button" onClick={() => setScreenState('idle')}>Close</button>
+            <button
+              className="cancel-button"
+              type="button"
+              onClick={() => {
+                setSettingsOpen(false)
+                setScreenState(settingsReturnTo)
+              }}
+            >
+              Close
+            </button>
           </div>
         ) : screenState === 'idle' || screenState === 'holding' ? (
           <>
