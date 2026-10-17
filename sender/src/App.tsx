@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 
 const HOLD_MS = 1500
-const SEND_DELAY_MS = 5000
+const SEND_DELAY_MS = 4000
 
 type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
 
@@ -203,7 +203,7 @@ export default function App() {
         .sending-card { width: 100%; max-width: 310px; padding: 24px; border: 1px solid #dedbd5; border-radius: 16px; background: #fff; text-align: left; }
         .sending-title { margin: 0 0 20px; font-size: 20px; line-height: 1.3; font-weight: 700; }
         .sending-track { width: 100%; height: 4px; margin-bottom: 22px; overflow: hidden; border-radius: 99px; background: #e6e3de; }
-        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transition: width 16ms linear; }
+        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transition: width 120ms linear; }
         .cancel-button {
           width: 100%;
           min-height: 52px;
@@ -266,7 +266,7 @@ export default function App() {
                 SOS
               </button>
             </div>
-            <p className="hold-hint">Hold for 1.5 seconds to arm</p>
+            <p className="hold-hint">Hold for 2 seconds to arm</p>
           </>
         ) : screenState === 'sending' ? (
           <div className="sending-card">
@@ -293,6 +293,9 @@ export default function App() {
               <p className={`status-message${screenState === 'insert-error' ? ' status-message-error' : ''}`} role="status">
                 {locationMessage}
               </p>
+            )}
+            {(screenState === 'sent' || screenState === 'error' || screenState === 'insert-error') && (
+              <button className="cancel-button" type="button" onClick={cancel}>New alert</button>
             )}
           </div>
         )}
