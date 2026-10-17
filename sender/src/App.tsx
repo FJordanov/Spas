@@ -4,7 +4,7 @@ import { supabase } from './lib/supabase'
 const HOLD_MS = 1500
 const SEND_DELAY_MS = 4000
 
-type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
+type ScreenState = 'idle' | 'holding' | 'sending' | 'settings' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
 
 function getDeviceId() {
   let deviceId = localStorage.getItem('spas_device_id')
@@ -17,35 +17,27 @@ function getDeviceId() {
 
 export default function App() {
   const [screenState, setScreenState] = useState<ScreenState>('idle')
-  const [holdProgress, setHoldProgress] = useState(0)
-  const [sendProgress, setSendProgress] = useState(0)
   const [locationMessage, setLocationMessage] = useState('')
-  const holdStartedAt = useRef<number | null>(null)
-  const holdInterval = useRef<number | null>(null)
-  const sendStartedAt = useRef<number | null>(null)
-  const sendInterval = useRef<number | null>(null)
+  const holdTimeout = useRef<number | null>(null)
+  const sendTimeout = useRef<number | null>(null)
 
   const clearHold = () => {
-    if (holdInterval.current !== null) {
-      window.clearInterval(holdInterval.current)
-      holdInterval.current = null
+    if (holdTimeout.current !== null) {
+      window.clearTimeout(holdTimeout.current)
+      holdTimeout.current = null
     }
-    holdStartedAt.current = null
   }
 
   const clearSendDelay = () => {
-    if (sendInterval.current !== null) {
-      window.clearInterval(sendInterval.current)
-      sendInterval.current = null
+    if (sendTimeout.current !== null) {
+      window.clearTimeout(sendTimeout.current)
+      sendTimeout.current = null
     }
-    sendStartedAt.current = null
   }
 
   const cancel = () => {
     clearHold()
     clearSendDelay()
-    setHoldProgress(0)
-    setSendProgress(0)
     setLocationMessage('')
     setScreenState('idle')
   }
@@ -101,20 +93,11 @@ export default function App() {
 
   const startSending = () => {
     clearSendDelay()
-    sendStartedAt.current = performance.now()
-    setSendProgress(0)
     setScreenState('sending')
-    sendInterval.current = window.setInterval(() => {
-      const startedAt = sendStartedAt.current
-      if (startedAt === null) return
-
-      const progress = Math.min((performance.now() - startedAt) / SEND_DELAY_MS, 1)
-      setSendProgress(progress)
-      if (progress === 1) {
-        clearSendDelay()
-        sendAlert()
-      }
-    }, 16)
+    sendTimeout.current = window.setTimeout(() => {
+      sendTimeout.current = null
+      sendAlert()
+    }, SEND_DELAY_MS)
   }
 
   useEffect(() => () => {
@@ -123,31 +106,20 @@ export default function App() {
   }, [])
 
   const startHold = () => {
-    if (screenState !== 'idle' || holdStartedAt.current !== null) return
+    if (screenState !== 'idle' || holdTimeout.current !== null) return
 
-    holdStartedAt.current = performance.now()
     setScreenState('holding')
-    holdInterval.current = window.setInterval(() => {
-      const startedAt = holdStartedAt.current
-      if (startedAt === null) return
-
-      const progress = Math.min((performance.now() - startedAt) / HOLD_MS, 1)
-      setHoldProgress(progress)
-      if (progress === 1) {
-        clearHold()
-        startSending()
-      }
-    }, 16)
+    holdTimeout.current = window.setTimeout(() => {
+      holdTimeout.current = null
+      startSending()
+    }, HOLD_MS)
   }
 
   const endHold = () => {
     if (screenState !== 'holding') return
     clearHold()
-    setHoldProgress(0)
     setScreenState('idle')
   }
-
-  const ringOffset = 283 * (1 - holdProgress)
 
   return (
     <main className="sos-screen">
@@ -174,11 +146,16 @@ export default function App() {
         .action-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; padding: 24px 0; text-align: center; }
         .action-title { margin: 0 0 10px; font-size: 27px; line-height: 1.15; font-weight: 720; letter-spacing: 0; }
         .action-copy { min-height: 22px; margin: 0 0 34px; color: #666d68; font-size: 14px; }
+        .header-actions { display: flex; align-items: center; gap: 12px; }
+        .settings-button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid #c8c5bf; border-radius: 50%; color: #202321; background: #f4f2ee; font-size: 19px; line-height: 1; }
+        .settings-button:disabled { opacity: .5; }
         .sos-wrap { position: relative; display: grid; place-items: center; width: 244px; height: 244px; }
         .progress-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; pointer-events: none; }
         .ring-track, .ring-progress { fill: none; stroke-width: 5; }
         .ring-track { stroke: #dedbd5; }
-        .ring-progress { stroke: #c7352c; stroke-linecap: round; transition: stroke-dashoffset 40ms linear; }
+        .ring-progress { stroke: #c7352c; stroke-linecap: round; }
+        .ring-progress.ring-active { animation: ring-fill ${HOLD_MS}ms linear forwards; }
+        @keyframes ring-fill { from { stroke-dashoffset: 283; } to { stroke-dashoffset: 0; } }
         .sos-button {
           display: grid;
           place-items: center;
@@ -203,7 +180,9 @@ export default function App() {
         .sending-card { width: 100%; max-width: 310px; padding: 24px; border: 1px solid #dedbd5; border-radius: 16px; background: #fff; text-align: left; }
         .sending-title { margin: 0 0 20px; font-size: 20px; line-height: 1.3; font-weight: 700; }
         .sending-track { width: 100%; height: 4px; margin-bottom: 22px; overflow: hidden; border-radius: 99px; background: #e6e3de; }
-        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transition: width 120ms linear; }
+        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transform: scaleX(0); transform-origin: left; }
+        .sending-fill.bar-active { animation: bar-fill ${SEND_DELAY_MS}ms linear forwards; }
+        @keyframes bar-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
         .cancel-button {
           width: 100%;
           min-height: 52px;
@@ -219,7 +198,7 @@ export default function App() {
         .status-label { margin: 0 0 8px; font-size: 18px; font-weight: 700; }
         .status-message { margin: 0; color: #555d57; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
         .status-message-error { color: #c7352c; }
-        .bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding-top: 14px; border-top: 1px solid #dedbd5; }
+        .bottom-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding-top: 14px; border-top: 1px solid #dedbd5; }
         .nav-button { min-width: 0; min-height: 48px; padding: 8px 2px; border: 0; border-radius: 10px; color: #626863; background: transparent; font-size: 11px; font-weight: 600; white-space: nowrap; }
         .nav-button:first-child { color: #202321; background: #e8e5df; }
         @media (max-height: 680px) {
@@ -234,11 +213,30 @@ export default function App() {
 
       <header className="topline">
         <span className="brand">Spas Sender</span>
-        <span className="ready-indicator"><span className="ready-dot" />Ready</span>
+        <div className="header-actions">
+          <span className="ready-indicator"><span className="ready-dot" />Ready</span>
+          <button
+            className="settings-button"
+            type="button"
+            aria-label="Settings"
+            disabled={screenState !== 'idle'}
+            onClick={() => {
+              if (screenState === 'idle') setScreenState('settings')
+            }}
+          >
+            <span aria-hidden="true">⚙</span>
+          </button>
+        </div>
       </header>
 
       <section className="action-area" aria-live="polite">
-        {screenState === 'idle' || screenState === 'holding' ? (
+        {screenState === 'settings' ? (
+          <div className="status-panel">
+            <h1 className="status-label">Settings</h1>
+            <p className="status-message">Test mode and backend options will appear here.</p>
+            <button className="cancel-button" type="button" onClick={() => setScreenState('idle')}>Close</button>
+          </div>
+        ) : screenState === 'idle' || screenState === 'holding' ? (
           <>
             <h1 className="action-title">Emergency SOS</h1>
             <p className="action-copy">{screenState === 'holding' ? 'Keep holding to arm' : 'Press and hold to call for help'}</p>
@@ -246,12 +244,12 @@ export default function App() {
               <svg className="progress-ring" viewBox="0 0 100 100" aria-hidden="true">
                 <circle className="ring-track" cx="50" cy="50" r="45" />
                 <circle
-                  className="ring-progress"
                   cx="50"
                   cy="50"
                   r="45"
                   strokeDasharray="283"
-                  strokeDashoffset={ringOffset}
+                  className={`ring-progress${screenState === 'holding' ? ' ring-active' : ''}`}
+                  strokeDashoffset="283"
                 />
               </svg>
               <button
@@ -266,13 +264,12 @@ export default function App() {
                 SOS
               </button>
             </div>
-            <p className="hold-hint">Hold for 2 seconds to arm</p>
           </>
         ) : screenState === 'sending' ? (
           <div className="sending-card">
             <h1 className="sending-title">Sending alert…</h1>
-            <div className="sending-track" role="progressbar" aria-label="Sending alert" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(sendProgress * 100)}>
-              <div className="sending-fill" style={{ width: `${sendProgress * 100}%` }} />
+            <div className="sending-track" role="progressbar" aria-label="Sending alert" aria-valuemin={0} aria-valuemax={100}>
+              <div className={`sending-fill${screenState === 'sending' ? ' bar-active' : ''}`} />
             </div>
             <button className="cancel-button" type="button" onClick={cancel}>Cancel</button>
           </div>
@@ -305,7 +302,6 @@ export default function App() {
         <button className="nav-button" type="button">Check-in</button>
         <button className="nav-button" type="button">Messages</button>
         <button className="nav-button" type="button">Profile</button>
-        <button className="nav-button" type="button">Settings</button>
       </nav>
     </main>
   )
