@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { supabase } from './lib/supabase'
 
 const HOLD_MS = 1500
 const SEND_DELAY_MS = 5000
 
-type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'sent' | 'error'
+type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
+
+function getDeviceId() {
+  let deviceId = localStorage.getItem('spas_device_id')
+  if (!deviceId) {
+    deviceId = crypto.randomUUID()
+    localStorage.setItem('spas_device_id', deviceId)
+  }
+  return deviceId
+}
 
 export default function App() {
   const [screenState, setScreenState] = useState<ScreenState>('idle')
@@ -42,6 +52,7 @@ export default function App() {
 
   const sendAlert = useCallback(() => {
     setScreenState('locating')
+    setLocationMessage('')
 
     if (!('geolocation' in navigator)) {
       setLocationMessage('Location is not available on this device.')
@@ -50,11 +61,35 @@ export default function App() {
     }
 
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
+      async ({ coords }) => {
         setLocationMessage(
           `Lat ${coords.latitude.toFixed(5)} · Lon ${coords.longitude.toFixed(5)} · Accuracy ±${Math.round(coords.accuracy)} m`,
         )
-        setScreenState('sent')
+        setScreenState('submitting')
+
+        try {
+          const { error } = await supabase.from('alerts').insert({
+            type: 'sos',
+            priority: 1,
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy_m: coords.accuracy,
+            device_id: getDeviceId(),
+            status: 'new',
+            is_test: false,
+          })
+
+          if (error) {
+            setLocationMessage(error.message)
+            setScreenState('insert-error')
+            return
+          }
+
+          setScreenState('sent')
+        } catch (error) {
+          setLocationMessage(error instanceof Error ? error.message : String(error))
+          setScreenState('insert-error')
+        }
       },
       (error) => {
         setLocationMessage(error.message || 'Unable to get your location.')
@@ -183,6 +218,7 @@ export default function App() {
         .status-panel { width: 100%; max-width: 310px; margin-top: 26px; }
         .status-label { margin: 0 0 8px; font-size: 18px; font-weight: 700; }
         .status-message { margin: 0; color: #555d57; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+        .status-message-error { color: #c7352c; }
         .bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding-top: 14px; border-top: 1px solid #dedbd5; }
         .nav-button { min-width: 0; min-height: 48px; padding: 8px 2px; border: 0; border-radius: 10px; color: #626863; background: transparent; font-size: 11px; font-weight: 600; white-space: nowrap; }
         .nav-button:first-child { color: #202321; background: #e8e5df; }
@@ -243,9 +279,21 @@ export default function App() {
         ) : (
           <div className="status-panel">
             <h1 className="status-label">
-              {screenState === 'locating' ? 'Getting your location…' : screenState === 'sent' ? 'Location ready' : 'Location unavailable'}
+              {screenState === 'locating'
+                ? 'Getting location…'
+                : screenState === 'submitting'
+                  ? 'Sending…'
+                  : screenState === 'sent'
+                    ? 'Sent. Alert received by server.'
+                    : screenState === 'insert-error'
+                      ? 'Alert could not be sent'
+                      : 'Location unavailable'}
             </h1>
-            {locationMessage && <p className="status-message" role="status">{locationMessage}</p>}
+            {locationMessage && (
+              <p className={`status-message${screenState === 'insert-error' ? ' status-message-error' : ''}`} role="status">
+                {locationMessage}
+              </p>
+            )}
           </div>
         )}
       </section>
