@@ -18,8 +18,16 @@ type Alert = {
 }
 
 type UserRole = 'admin' | 'developer' | 'rescue' | string
+type AlertTypeFilter = 'all' | 'sos' | 'checkin' | 'message'
+type AlertStatusFilter = 'all' | 'new' | 'acknowledged'
+type AlertTimeFilter = 'all' | '1h' | '24h' | '7d'
 
 const SOFIA: LatLngExpression = [42.6977, 23.3219]
+const TIME_FILTER_MS: Record<Exclude<AlertTimeFilter, 'all'>, number> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+}
 
 function MapCenter({ center }: { center: LatLngExpression }) {
   const map = useMap()
@@ -35,6 +43,10 @@ export default function AlertsMap() {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [role, setRole] = useState<UserRole | null>(null)
   const [showTestAlerts, setShowTestAlerts] = useState(false)
+  const [typeFilter, setTypeFilter] = useState<AlertTypeFilter>('all')
+  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>('all')
+  const [timeFilter, setTimeFilter] = useState<AlertTimeFilter>('all')
+  const [filtersAppliedAt, setFiltersAppliedAt] = useState(0)
   const [focusedAlertId, setFocusedAlertId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [alertsLoaded, setAlertsLoaded] = useState(false)
@@ -101,10 +113,21 @@ export default function AlertsMap() {
 
   const canViewTestAlerts = role === 'admin' || role === 'developer'
   const canViewDeviceId = canViewTestAlerts
-  const visibleAlerts = useMemo(
-    () => alerts.filter((alert) => (canViewTestAlerts && showTestAlerts) || !alert.is_test),
-    [alerts, canViewTestAlerts, showTestAlerts],
-  )
+  const visibleAlerts = useMemo(() => {
+    if (!alertsLoaded) return []
+    return alerts.filter((alert) => {
+      if (!(canViewTestAlerts && showTestAlerts) && alert.is_test) return false
+      if (typeFilter !== 'all' && alert.type.toLowerCase().replace(/[-_\s]/g, '') !== typeFilter) return false
+      if (statusFilter !== 'all' && alert.status.toLowerCase() !== statusFilter) return false
+      if (timeFilter !== 'all') {
+        const createdAt = new Date(alert.created_at).getTime()
+        if (!Number.isFinite(createdAt) || filtersAppliedAt - createdAt > TIME_FILTER_MS[timeFilter] || createdAt > filtersAppliedAt) {
+          return false
+        }
+      }
+      return true
+    })
+  }, [alerts, alertsLoaded, canViewTestAlerts, showTestAlerts, typeFilter, statusFilter, timeFilter, filtersAppliedAt])
   const visibleAlertsWithCoordinates = visibleAlerts.filter(
     (alert): alert is Alert & { latitude: number; longitude: number } =>
       typeof alert.latitude === 'number'
@@ -119,6 +142,21 @@ export default function AlertsMap() {
       ? [visibleAlertsWithCoordinates[0].latitude, visibleAlertsWithCoordinates[0].longitude]
       : SOFIA
   const testAlertCount = alerts.filter((alert) => alert.is_test).length
+  const resetFilters = () => {
+    setFiltersAppliedAt(Date.now())
+    setTypeFilter('all')
+    setStatusFilter('all')
+    setTimeFilter('all')
+    setFocusedAlertId(null)
+  }
+  const selectStyle = {
+    minHeight: 38,
+    padding: '6px 10px',
+    border: '1px solid #dedbd5',
+    borderRadius: 8,
+    background: '#fff',
+    color: '#202321',
+  }
 
   const formatTime = (value: string) => new Date(value).toLocaleString()
 
@@ -133,6 +171,7 @@ export default function AlertsMap() {
         }
         .alerts-map { width: 100%; height: 560px; border-radius: 10px; }
         .alerts-list { max-height: 560px; overflow: auto; }
+        .alerts-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
         @media (max-width: 760px) {
           .alerts-layout { grid-template-columns: minmax(0, 1fr); }
           .alerts-map { height: 400px; }
@@ -148,6 +187,7 @@ export default function AlertsMap() {
                 type="checkbox"
                 checked={showTestAlerts}
                 onChange={(event) => {
+                  setFiltersAppliedAt(Date.now())
                   setShowTestAlerts(event.target.checked)
                   setFocusedAlertId(null)
                 }}
@@ -205,13 +245,67 @@ export default function AlertsMap() {
           })}
         </MapContainer>
         <div className="alerts-list" style={{ display: 'grid', alignContent: 'start', gap: 8 }}>
+          <div className="alerts-filter-row">
+            <label style={{ display: 'grid', gap: 4, color: '#626863', fontSize: 12 }}>
+              Type
+              <select value={typeFilter} onChange={(event) => {
+                setFiltersAppliedAt(Date.now())
+                setTypeFilter(event.target.value as AlertTypeFilter)
+                setFocusedAlertId(null)
+              }} style={selectStyle}>
+                <option value="all">All types</option>
+                <option value="sos">SOS</option>
+                <option value="checkin">Check-in</option>
+                <option value="message">Message</option>
+              </select>
+            </label>
+            <label style={{ display: 'grid', gap: 4, color: '#626863', fontSize: 12 }}>
+              Status
+              <select value={statusFilter} onChange={(event) => {
+                setFiltersAppliedAt(Date.now())
+                setStatusFilter(event.target.value as AlertStatusFilter)
+                setFocusedAlertId(null)
+              }} style={selectStyle}>
+                <option value="all">All statuses</option>
+                <option value="new">New</option>
+                <option value="acknowledged">Acknowledged</option>
+              </select>
+            </label>
+            <label style={{ display: 'grid', gap: 4, color: '#626863', fontSize: 12 }}>
+              Time
+              <select value={timeFilter} onChange={(event) => {
+                setFiltersAppliedAt(Date.now())
+                setTimeFilter(event.target.value as AlertTimeFilter)
+                setFocusedAlertId(null)
+              }} style={selectStyle}>
+                <option value="all">All time</option>
+                <option value="1h">Last hour</option>
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={resetFilters}
+              style={{ alignSelf: 'end', minHeight: 38, padding: '6px 10px', border: '1px solid #dedbd5', borderRadius: 8, background: '#fff', color: '#202321', cursor: 'pointer' }}
+            >
+              Reset filters
+            </button>
+          </div>
+          {alertsLoaded && (
+            <p style={{ margin: '0 0 4px', color: '#626863' }}>
+              Showing {visibleAlerts.length} of {alerts.length} alerts
+            </p>
+          )}
           {alertsLoaded && (
             <p style={{ margin: '0 0 4px', color: '#626863' }}>
               Loaded {alerts.length} alerts ({testAlertCount} tests)
             </p>
           )}
-          {alertsLoaded && !alertsError && visibleAlerts.length === 0 ? (
+          {alertsLoaded && !alertsError && alerts.length === 0 ? (
             <p style={{ margin: 0, color: '#626863' }}>No alerts to show.</p>
+          ) : alertsLoaded && !alertsError && visibleAlerts.length === 0 ? (
+            <p style={{ margin: 0, color: '#626863' }}>No alerts match these filters.</p>
           ) : visibleAlerts.map((alert) => (
             <button
               key={alert.id}
