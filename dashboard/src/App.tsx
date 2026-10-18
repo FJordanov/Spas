@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import LoginPage from './LoginPage'
+import AlertsMap from './AlertsMap'
 import { supabase } from './lib/supabase'
 
 export default function App() {
@@ -49,24 +50,27 @@ export default function App() {
       style={{
         minHeight: '100vh',
         display: 'grid',
-        placeItems: 'center',
+        placeItems: 'start center',
         padding: 24,
         background: '#f4f2ee',
         color: '#202321',
         fontFamily: 'system-ui, sans-serif',
       }}
     >
-      <section style={{ width: '100%', maxWidth: 480, padding: 32, border: '1px solid #dedbd5', borderRadius: 12, background: '#fff' }}>
-        <p style={{ margin: '0 0 20px', color: '#202321', fontSize: 18, fontWeight: 600 }}>
-          Signed in as {session.user.email}
-        </p>
-        <button
-          type="button"
-          onClick={() => { void supabase.auth.signOut() }}
-          style={{ minHeight: 48, padding: '12px 18px', border: 0, borderRadius: 8, background: '#28734b', color: '#fff', fontSize: 15, fontWeight: 650, cursor: 'pointer' }}
-        >
-          Sign out
-        </button>
+      <section style={{ width: '100%', maxWidth: 1440, padding: 24, border: '1px solid #dedbd5', borderRadius: 12, background: '#fff' }}>
+        <header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 24 }}>
+          <p style={{ margin: 0, color: '#202321', fontSize: 16, fontWeight: 600 }}>
+            Signed in as {session.user.email}
+          </p>
+          <button
+            type="button"
+            onClick={() => { void supabase.auth.signOut() }}
+            style={{ minHeight: 48, padding: '12px 18px', border: 0, borderRadius: 8, background: '#28734b', color: '#fff', fontSize: 15, fontWeight: 650, cursor: 'pointer' }}
+          >
+            Sign out
+          </button>
+        </header>
+        <AlertsMap />
       </section>
     </main>
   )
