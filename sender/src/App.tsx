@@ -1,160 +1,514 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 
+const IS_TEST_BUILD = true
 const HOLD_MS = 1500
 const SEND_DELAY_MS = 4000
 
 type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
+type LocationStatus = 'checking' | 'granted' | 'prompt' | 'denied' | 'unsupported'
+type Theme = 'system' | 'dark' | 'light'
+type PrefetchedFix = {
+  latitude: number
+  longitude: number
+  accuracy: number
+  timestamp: number
+}
+type AlertHistoryEntry = {
+  id: string
+  created_at: string
+  type: 'sos'
+  priority: 1
+  latitude: number
+  longitude: number
+  accuracy_m: number
+  is_test: boolean
+  status: 'sent' | 'failed'
+  error: string | null
+}
+
+const APP_VERSION = '0.0.0'
+
+function isAlertHistoryEntry(entry: unknown): entry is AlertHistoryEntry {
+  if (typeof entry !== 'object' || entry === null) return false
+  const item = entry as Record<string, unknown>
+  return typeof item.id === 'string'
+    && typeof item.created_at === 'string'
+    && item.type === 'sos'
+    && item.priority === 1
+    && typeof item.latitude === 'number'
+    && typeof item.longitude === 'number'
+    && typeof item.accuracy_m === 'number'
+    && typeof item.is_test === 'boolean'
+    && (item.status === 'sent' || item.status === 'failed')
+    && (item.error === null || typeof item.error === 'string')
+}
+
+function readAlertHistory(): AlertHistoryEntry[] {
+  try {
+    const value = localStorage.getItem('spas_alert_history')
+    if (!value) return []
+    const entries: unknown = JSON.parse(value)
+    return Array.isArray(entries) ? entries.filter(isAlertHistoryEntry) : []
+  } catch {
+    return []
+  }
+}
+
+function storeAlertHistory(entry: AlertHistoryEntry): AlertHistoryEntry[] {
+  const history = [entry, ...readAlertHistory()].slice(0, 20)
+  try {
+    localStorage.setItem('spas_alert_history', JSON.stringify(history))
+  } catch {
+    return history
+  }
+  return history
+}
 
 function getDeviceId() {
-  let deviceId = localStorage.getItem('spas_device_id')
-  if (!deviceId) {
-    deviceId = crypto.randomUUID()
-    localStorage.setItem('spas_device_id', deviceId)
+  try {
+    let deviceId = localStorage.getItem('spas_device_id')
+    if (!deviceId) {
+      deviceId = crypto.randomUUID()
+      localStorage.setItem('spas_device_id', deviceId)
+    }
+    return deviceId
+  } catch {
+    return crypto.randomUUID()
   }
-  return deviceId
 }
 
 export default function App() {
   const [screenState, setScreenState] = useState<ScreenState>('idle')
-  const [holdProgress, setHoldProgress] = useState(0)
-  const [sendProgress, setSendProgress] = useState(0)
+  const [settingsReturnTo, setSettingsReturnTo] = useState<ScreenState>('idle')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [alertInfoOpen, setAlertInfoOpen] = useState(false)
+  const [alertInfoReturnTo, setAlertInfoReturnTo] = useState<ScreenState>('idle')
+  const [alertHistory, setAlertHistory] = useState<AlertHistoryEntry[]>(readAlertHistory)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => alertHistory[0]?.id ?? null)
+  const [reportText, setReportText] = useState('')
+  const [reportEmail, setReportEmail] = useState('')
+  const [includeLocation, setIncludeLocation] = useState(false)
+  const [reportMessage, setReportMessage] = useState('')
+  const [reportErrorDetail, setReportErrorDetail] = useState('')
+  const [reportMessageIsError, setReportMessageIsError] = useState(false)
+  const [reportSubmitting, setReportSubmitting] = useState(false)
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      const storedTheme = localStorage.getItem('spas_theme')
+      return storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : 'system'
+    } catch {
+      return 'system'
+    }
+  })
+  const [locationStatus, setLocationStatus] = useState<LocationStatus>('checking')
   const [locationMessage, setLocationMessage] = useState('')
-  const holdStartedAt = useRef<number | null>(null)
-  const holdInterval = useRef<number | null>(null)
-  const sendStartedAt = useRef<number | null>(null)
-  const sendInterval = useRef<number | null>(null)
+  const [sendingStage, setSendingStage] = useState('Processing…')
+  const [cancelWindowActive, setCancelWindowActive] = useState(false)
+  const holdTimeout = useRef<number | null>(null)
+  const sendTimeout = useRef<number | null>(null)
+  const stageTimeout = useRef<number | null>(null)
+  const prefetchedFix = useRef<PrefetchedFix | null>(null)
+  const prefetchError = useRef<string | null>(null)
+  const prefetchPending = useRef(false)
+  const attemptId = useRef(0)
+  const sendWindowElapsed = useRef(false)
 
   const clearHold = () => {
-    if (holdInterval.current !== null) {
-      window.clearInterval(holdInterval.current)
-      holdInterval.current = null
+    if (holdTimeout.current !== null) {
+      window.clearTimeout(holdTimeout.current)
+      holdTimeout.current = null
     }
-    holdStartedAt.current = null
   }
 
   const clearSendDelay = () => {
-    if (sendInterval.current !== null) {
-      window.clearInterval(sendInterval.current)
-      sendInterval.current = null
+    if (sendTimeout.current !== null) {
+      window.clearTimeout(sendTimeout.current)
+      sendTimeout.current = null
     }
-    sendStartedAt.current = null
+  }
+
+  const clearStageDelay = () => {
+    if (stageTimeout.current !== null) {
+      window.clearTimeout(stageTimeout.current)
+      stageTimeout.current = null
+    }
   }
 
   const cancel = () => {
     clearHold()
     clearSendDelay()
-    setHoldProgress(0)
-    setSendProgress(0)
+    clearStageDelay()
+    attemptId.current += 1
+    prefetchedFix.current = null
+    prefetchError.current = null
+    prefetchPending.current = false
+    sendWindowElapsed.current = false
     setLocationMessage('')
+    setCancelWindowActive(false)
     setScreenState('idle')
   }
 
-  const sendAlert = useCallback(() => {
-    setScreenState('locating')
+  const recordAlert = useCallback((fix: PrefetchedFix, status: AlertHistoryEntry['status'], error: string | null) => {
+    const entry: AlertHistoryEntry = {
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(),
+      type: 'sos',
+      priority: 1,
+      latitude: fix.latitude,
+      longitude: fix.longitude,
+      accuracy_m: fix.accuracy,
+      is_test: IS_TEST_BUILD,
+      status,
+      error,
+    }
+    setAlertHistory(storeAlertHistory(entry))
+  }, [])
+
+  const insertAlert = useCallback(async (fix: PrefetchedFix, currentAttempt: number) => {
+    if (attemptId.current !== currentAttempt) return
+    setSendingStage('Approving…')
     setLocationMessage('')
 
+    try {
+      const { error } = await supabase.from('alerts').insert({
+        type: 'sos',
+        priority: 1,
+        latitude: fix.latitude,
+        longitude: fix.longitude,
+        accuracy_m: fix.accuracy,
+        device_id: getDeviceId(),
+        status: 'new',
+        is_test: IS_TEST_BUILD,
+      })
+
+      if (attemptId.current !== currentAttempt) return
+      if (error) {
+        recordAlert(fix, 'failed', error.message)
+        setLocationMessage(error.message)
+        setScreenState('insert-error')
+        return
+      }
+
+      recordAlert(fix, 'sent', null)
+      setScreenState('sent')
+    } catch (error) {
+      if (attemptId.current !== currentAttempt) return
+      const message = error instanceof Error ? error.message : String(error)
+      recordAlert(fix, 'failed', message)
+      setLocationMessage(message)
+      setScreenState('insert-error')
+    }
+  }, [recordAlert])
+
+  const requestPrefetch = (currentAttempt: number) => {
+    prefetchPending.current = true
+
     if (!('geolocation' in navigator)) {
-      setLocationMessage('Location is not available on this device.')
-      setScreenState('error')
+      prefetchPending.current = false
+      const message = 'Location is not available on this device.'
+      prefetchError.current = message
+      if (sendWindowElapsed.current && attemptId.current === currentAttempt) {
+        setLocationMessage(message)
+        setScreenState('error')
+      }
+      return
+    }
+
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (attemptId.current !== currentAttempt) return
+          const { coords } = position
+          const fix = {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy,
+            timestamp: position.timestamp,
+          }
+          prefetchedFix.current = fix
+          prefetchError.current = null
+          prefetchPending.current = false
+          clearStageDelay()
+          if (!sendWindowElapsed.current) setSendingStage('Processing…')
+          if (sendWindowElapsed.current) void insertAlert(fix, currentAttempt)
+        },
+        (error) => {
+          if (attemptId.current !== currentAttempt) return
+          const message = error.message || 'Unable to get your location.'
+          prefetchedFix.current = null
+          prefetchError.current = message
+          prefetchPending.current = false
+          if (sendWindowElapsed.current) {
+            setLocationMessage(message)
+            setScreenState('error')
+          }
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      )
+    } catch (error) {
+      if (attemptId.current !== currentAttempt) return
+      const message = error instanceof Error ? error.message : String(error)
+      prefetchError.current = message
+      prefetchPending.current = false
+      if (sendWindowElapsed.current) {
+        setLocationMessage(message)
+        setScreenState('error')
+      }
+    }
+  }
+
+  useEffect(() => {
+    let isActive = true
+    let permissionStatus: PermissionStatus | null = null
+
+    if (!('geolocation' in navigator)) {
+      setLocationStatus('unsupported')
+    } else if (!('permissions' in navigator) || !navigator.permissions) {
+      setLocationStatus('prompt')
+    } else {
+      navigator.permissions.query({ name: 'geolocation' })
+        .then((status) => {
+          if (!isActive) return
+          permissionStatus = status
+          setLocationStatus(status.state)
+          status.onchange = () => {
+            if (isActive) setLocationStatus(status.state)
+          }
+        })
+        .catch(() => {
+          if (isActive) setLocationStatus('prompt')
+        })
+    }
+
+    return () => {
+      isActive = false
+      if (permissionStatus) permissionStatus.onchange = null
+    }
+  }, [])
+
+  const requestLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setLocationStatus('unsupported')
       return
     }
 
     navigator.geolocation.getCurrentPosition(
-      async ({ coords }) => {
-        setLocationMessage(
-          `Lat ${coords.latitude.toFixed(5)} · Lon ${coords.longitude.toFixed(5)} · Accuracy ±${Math.round(coords.accuracy)} m`,
-        )
-        setScreenState('submitting')
-
-        try {
-          const { error } = await supabase.from('alerts').insert({
-            type: 'sos',
-            priority: 1,
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-            accuracy_m: coords.accuracy,
-            device_id: getDeviceId(),
-            status: 'new',
-            is_test: false,
-          })
-
-          if (error) {
-            setLocationMessage(error.message)
-            setScreenState('insert-error')
-            return
-          }
-
-          setScreenState('sent')
-        } catch (error) {
-          setLocationMessage(error instanceof Error ? error.message : String(error))
-          setScreenState('insert-error')
-        }
-      },
+      () => setLocationStatus('granted'),
       (error) => {
-        setLocationMessage(error.message || 'Unable to get your location.')
-        setScreenState('error')
+        if (error.code === 1) setLocationStatus('denied')
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      { timeout: 10000 },
     )
-  }, [])
+  }
 
-  const startSending = () => {
+  const startSending = (currentAttempt: number) => {
     clearSendDelay()
-    sendStartedAt.current = performance.now()
-    setSendProgress(0)
+    clearStageDelay()
     setScreenState('sending')
-    sendInterval.current = window.setInterval(() => {
-      const startedAt = sendStartedAt.current
-      if (startedAt === null) return
-
-      const progress = Math.min((performance.now() - startedAt) / SEND_DELAY_MS, 1)
-      setSendProgress(progress)
-      if (progress === 1) {
-        clearSendDelay()
-        sendAlert()
+    setCancelWindowActive(true)
+    setSendingStage('Processing…')
+    prefetchedFix.current = null
+    prefetchError.current = null
+    sendWindowElapsed.current = false
+    stageTimeout.current = window.setTimeout(() => {
+      stageTimeout.current = null
+      if (attemptId.current === currentAttempt && !prefetchedFix.current) {
+        setSendingStage('Locating…')
       }
-    }, 16)
+    }, 1000)
+    sendTimeout.current = window.setTimeout(() => {
+      sendTimeout.current = null
+      if (attemptId.current !== currentAttempt) return
+      sendWindowElapsed.current = true
+      setCancelWindowActive(false)
+      clearStageDelay()
+      const fix = prefetchedFix.current
+      if (fix && Date.now() - fix.timestamp < 30_000) {
+        void insertAlert(fix, currentAttempt)
+      } else if (prefetchError.current) {
+        setLocationMessage(prefetchError.current)
+        setScreenState('error')
+      } else {
+        setSendingStage('Locating…')
+        if (fix) {
+          prefetchedFix.current = null
+          requestPrefetch(currentAttempt)
+        } else if (!prefetchPending.current) {
+          requestPrefetch(currentAttempt)
+        }
+      }
+    }, SEND_DELAY_MS)
+    requestPrefetch(currentAttempt)
   }
 
   useEffect(() => () => {
     clearHold()
     clearSendDelay()
+    clearStageDelay()
+    attemptId.current += 1
+    prefetchedFix.current = null
+    prefetchError.current = null
+    prefetchPending.current = false
   }, [])
 
+  useEffect(() => {
+    const root = document.documentElement
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)')
+    const applyTheme = () => {
+      root.dataset.theme = theme === 'system'
+        ? colorScheme.matches ? 'dark' : 'light'
+        : theme
+    }
+
+    try {
+      localStorage.setItem('spas_theme', theme)
+    } catch {
+      // Theme remains active for this session when storage is unavailable.
+    }
+    applyTheme()
+
+    if (theme === 'system') {
+      colorScheme.addEventListener('change', applyTheme)
+      return () => colorScheme.removeEventListener('change', applyTheme)
+    }
+  }, [theme])
+
   const startHold = () => {
-    if (screenState !== 'idle' || holdStartedAt.current !== null) return
+    if (screenState !== 'idle' || holdTimeout.current !== null) return
 
-    holdStartedAt.current = performance.now()
+    const currentAttempt = ++attemptId.current
     setScreenState('holding')
-    holdInterval.current = window.setInterval(() => {
-      const startedAt = holdStartedAt.current
-      if (startedAt === null) return
-
-      const progress = Math.min((performance.now() - startedAt) / HOLD_MS, 1)
-      setHoldProgress(progress)
-      if (progress === 1) {
-        clearHold()
-        startSending()
-      }
-    }, 16)
+    holdTimeout.current = window.setTimeout(() => {
+      holdTimeout.current = null
+      startSending(currentAttempt)
+    }, HOLD_MS)
   }
 
   const endHold = () => {
     if (screenState !== 'holding') return
     clearHold()
-    setHoldProgress(0)
+    attemptId.current += 1
     setScreenState('idle')
   }
 
-  const ringOffset = 283 * (1 - holdProgress)
+  const sendReport = async () => {
+    const description = reportText.trim()
+    const email = reportEmail.trim()
+    if (description.length < 5 || description.length > 1000 || reportSubmitting) return
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setReportMessage('Please enter a valid email or leave it empty.')
+      setReportMessageIsError(true)
+      return
+    }
+
+    const recentEntries = readAlertHistory().slice(0, 5)
+    const selectedAlert = recentEntries.find((entry) => entry.id === selectedAlertId) ?? null
+    const location = prefetchedFix.current ?? (recentEntries[0]
+      ? {
+        latitude: recentEntries[0].latitude,
+        longitude: recentEntries[0].longitude,
+      }
+      : null)
+    const report = [
+      description,
+      '',
+      `App version: ${APP_VERSION}`,
+      `Theme: ${theme}`,
+      `Time: ${new Date().toISOString()}`,
+      'Selected alert:',
+      ...(selectedAlert
+        ? [
+          `- ${new Date(selectedAlert.created_at).toLocaleString()} · ${selectedAlert.status}`,
+          ...(includeLocation
+            ? [`  Coordinates: ${selectedAlert.latitude}, ${selectedAlert.longitude} · ±${selectedAlert.accuracy_m} m`]
+            : []),
+          ...(selectedAlert.error ? [`  Error: ${selectedAlert.error}`] : []),
+        ]
+        : ['- None']),
+    ].join('\n')
+
+    setReportSubmitting(true)
+    setReportMessage('')
+    setReportErrorDetail('')
+    setReportMessageIsError(false)
+    try {
+      const { error } = await supabase.from('problem_reports').insert({
+        message: description,
+        contact_email: email || null,
+        app_version: APP_VERSION,
+        theme,
+        device_id: getDeviceId(),
+        include_location: includeLocation,
+        latitude: includeLocation ? location?.latitude ?? null : null,
+        longitude: includeLocation ? location?.longitude ?? null : null,
+        selected_alert: selectedAlert
+          ? {
+            created_at: selectedAlert.created_at,
+            status: selectedAlert.status,
+            is_test: selectedAlert.is_test,
+            error: selectedAlert.error,
+            ...(includeLocation
+              ? {
+                latitude: selectedAlert.latitude,
+                longitude: selectedAlert.longitude,
+                accuracy_m: selectedAlert.accuracy_m,
+              }
+              : {}),
+          }
+          : null,
+      })
+
+      if (error) throw new Error(error.message)
+
+      setReportText('')
+      setReportEmail('')
+      setIncludeLocation(false)
+      setReportMessage('Report sent. Thank you.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        await navigator.clipboard.writeText(report)
+        setReportMessage('Could not send. Report copied to clipboard. Paste it to the developer.')
+        setReportErrorDetail(message)
+      } catch (clipboardError) {
+        const clipboardMessage = clipboardError instanceof Error ? clipboardError.message : String(clipboardError)
+        setReportMessage('Could not send the report. Clipboard copy failed.')
+        setReportErrorDetail(`${message}. ${clipboardMessage}`)
+      }
+      setReportMessageIsError(true)
+    } finally {
+      setReportSubmitting(false)
+    }
+  }
 
   return (
     <main className="sos-screen">
       <style>{`
         * { box-sizing: border-box; }
+        :root {
+          --page-background: #f4f2ee;
+          --card-background: #ffffff;
+          --text-primary: #202321;
+          --text-muted: #626863;
+          --border: #dedbd5;
+          --card: var(--card-background);
+          --text: var(--text-primary);
+          --selected-background: #e8e5df;
+        }
+        :root[data-theme="dark"] {
+          --page-background: #1b1d1c;
+          --card-background: #262927;
+          --text-primary: #eceae6;
+          --text-muted: #a3a9a5;
+          --border: #3a3d3b;
+          --card: var(--card-background);
+          --text: var(--text-primary);
+          --selected-background: #3a3d3b;
+        }
         html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-        body { background: #f4f2ee; color: #202321; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        body { background: var(--page-background); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
         button { font: inherit; }
         .sos-screen {
           min-height: 100vh;
@@ -165,63 +519,101 @@ export default function App() {
           max-width: 480px;
           margin: 0 auto;
           padding: max(24px, env(safe-area-inset-top)) 24px max(16px, env(safe-area-inset-bottom));
-          background: #f4f2ee;
+          background: var(--page-background);
         }
         .topline { display: flex; align-items: center; justify-content: space-between; min-height: 42px; }
         .brand { font-size: 14px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
-        .ready-indicator { display: flex; align-items: center; gap: 8px; color: #626863; font-size: 12px; }
+        .ready-indicator { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
         .ready-dot { width: 8px; height: 8px; border-radius: 50%; background: #4c9b6a; box-shadow: 0 0 0 3px #dce9df; }
         .action-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; padding: 24px 0; text-align: center; }
         .action-title { margin: 0 0 10px; font-size: 27px; line-height: 1.15; font-weight: 720; letter-spacing: 0; }
-        .action-copy { min-height: 22px; margin: 0 0 34px; color: #666d68; font-size: 14px; }
+        .action-copy { min-height: 22px; margin: 0 0 34px; color: var(--text-muted); font-size: 14px; }
+        .test-banner { margin: 0 0 12px; color: var(--text-muted); font-size: 13px; text-align: center; }
+        .header-actions { display: flex; align-items: center; gap: 12px; }
+        .settings-button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-primary); background: var(--page-background); font-size: 19px; line-height: 1; }
+        .settings-button:disabled { opacity: .5; }
         .sos-wrap { position: relative; display: grid; place-items: center; width: 244px; height: 244px; }
         .progress-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; pointer-events: none; }
         .ring-track, .ring-progress { fill: none; stroke-width: 5; }
-        .ring-track { stroke: #dedbd5; }
-        .ring-progress { stroke: #c7352c; stroke-linecap: round; transition: stroke-dashoffset 40ms linear; }
+        .ring-track { stroke: var(--border); }
+        .ring-progress { stroke: #c7352c; stroke-linecap: round; }
+        .ring-progress.ring-active { animation: ring-fill ${HOLD_MS}ms linear forwards; }
+        @keyframes ring-fill { from { stroke-dashoffset: 283; } to { stroke-dashoffset: 0; } }
         .sos-button {
-          display: grid;
-          place-items: center;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
           width: 206px;
           height: 206px;
+          padding: 0;
           border: 0;
           border-radius: 50%;
           color: white;
           background: #c7352c;
           box-shadow: 0 12px 28px #8b211d38, inset 0 2px 0 #ffffff30;
-          font-size: 48px;
-          line-height: 1;
-          font-weight: 760;
-          letter-spacing: .03em;
           touch-action: none;
           user-select: none;
           -webkit-user-select: none;
           transition: transform 120ms ease, background 180ms ease;
         }
         .sos-button:active { transform: scale(.97); }
-        .hold-hint { margin: 28px 0 0; color: #626863; font-size: 13px; }
-        .sending-card { width: 100%; max-width: 310px; padding: 24px; border: 1px solid #dedbd5; border-radius: 16px; background: #fff; text-align: left; }
+        .sos-label { display: block; font-size: 48px; line-height: 1; font-weight: 760; letter-spacing: .03em; }
+        .sos-test-label { display: block; margin-top: 6px; font-size: 14px; line-height: 1; font-weight: 600; letter-spacing: .05em; color: inherit; }
+        .hold-hint { margin: 28px 0 0; color: var(--text-muted); font-size: 13px; }
+        .sending-card { width: 100%; max-width: 310px; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--card-background); text-align: left; }
         .sending-title { margin: 0 0 20px; font-size: 20px; line-height: 1.3; font-weight: 700; }
         .sending-track { width: 100%; height: 4px; margin-bottom: 22px; overflow: hidden; border-radius: 99px; background: #e6e3de; }
-        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transition: width 120ms linear; }
+        .sending-fill { height: 100%; border-radius: inherit; background: #c7352c; transform: scaleX(0); transform-origin: left; }
+        .sending-fill.bar-active { animation: bar-fill ${SEND_DELAY_MS}ms linear forwards; }
+        @keyframes bar-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
         .cancel-button {
           width: 100%;
           min-height: 52px;
           padding: 12px 20px;
-          border: 1px solid #c8c5bf;
+          border: 1px solid var(--border);
           border-radius: 12px;
-          color: #202321;
-          background: #f4f2ee;
+          color: var(--text-primary);
+          background: var(--page-background);
           font-size: 16px;
           font-weight: 650;
         }
         .status-panel { width: 100%; max-width: 310px; margin-top: 26px; }
+        .alert-info-panel { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 360px; max-height: 100%; margin-top: 8px; overflow-y: auto; text-align: left; }
+        .alert-history-list { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
+        .alert-history-entry { padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+        .report-form { display: grid; gap: 12px; }
+        .report-textarea { width: 100%; min-height: 90px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-primary); background: var(--card-background); font: inherit; resize: vertical; }
+        .report-email { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-primary); background: var(--card-background); font: inherit; }
+        .report-location-option { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 14px; }
+        .report-alert-options { display: grid; gap: 8px; }
+        .report-alert-option { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); text-align: left; }
+        .report-alert-option[aria-pressed="true"] { border: 2px solid var(--text); }
+        .report-alert-detail { display: block; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+        .report-message-error { color: #c7352c; }
         .status-label { margin: 0 0 8px; font-size: 18px; font-weight: 700; }
-        .status-message { margin: 0; color: #555d57; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+        .status-message { margin: 0; color: var(--text-muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
         .status-message-error { color: #c7352c; }
-        .bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding-top: 14px; border-top: 1px solid #dedbd5; }
-        .nav-button { min-width: 0; min-height: 48px; padding: 8px 2px; border: 0; border-radius: 10px; color: #626863; background: transparent; font-size: 11px; font-weight: 600; white-space: nowrap; }
-        .nav-button:first-child { color: #202321; background: #e8e5df; }
+        .location-row { margin: 24px 0; text-align: left; }
+        .location-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 650; }
+        .location-detail { margin: 0; color: var(--text-muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+        .location-active { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 14px; }
+        .appearance-options { display: flex; gap: 8px; }
+        .theme-button {
+          flex: 1;
+          min-height: 44px;
+          padding: 10px 12px;
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          background: var(--card);
+          color: var(--text);
+          font-size: 14px;
+          font-weight: 600;
+        }
+        .theme-button[aria-pressed="true"] { border: 2px solid var(--text); }
+        .bottom-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+        .nav-button { min-width: 0; min-height: 48px; padding: 8px 2px; border: 0; border-radius: 10px; color: var(--text-muted); background: transparent; font-size: 11px; font-weight: 600; white-space: nowrap; }
+        .nav-button:first-child { color: var(--text-primary); background: var(--selected-background); }
         @media (max-height: 680px) {
           .sos-screen { padding-top: 12px; }
           .action-area { padding: 12px 0; }
@@ -234,24 +626,239 @@ export default function App() {
 
       <header className="topline">
         <span className="brand">Spas Sender</span>
-        <span className="ready-indicator"><span className="ready-dot" />Ready</span>
+        <div className="header-actions">
+          <span className="ready-indicator"><span className="ready-dot" />Ready</span>
+          {(screenState === 'idle' || screenState === 'sent' || screenState === 'error' || screenState === 'insert-error') && (
+            <>
+              <button
+                className="settings-button"
+                type="button"
+                aria-label="Alert info"
+                title="Alert info"
+                disabled={alertInfoOpen || settingsOpen}
+                onClick={() => {
+                  if (alertInfoOpen || settingsOpen) return
+                  setAlertInfoReturnTo(screenState)
+                  const history = readAlertHistory()
+                  setAlertHistory(history)
+                  setSelectedAlertId(history[0]?.id ?? null)
+                  setAlertInfoOpen(true)
+                }}
+              >
+                <span aria-hidden="true">ⓘ</span>
+              </button>
+              <button
+                className="settings-button"
+                type="button"
+                aria-label="Settings"
+                disabled={settingsOpen || alertInfoOpen}
+                onClick={() => {
+                  if (settingsOpen || alertInfoOpen) return
+                  setSettingsReturnTo(screenState)
+                  setSettingsOpen(true)
+                }}
+              >
+                <span aria-hidden="true">⚙</span>
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       <section className="action-area" aria-live="polite">
-        {screenState === 'idle' || screenState === 'holding' ? (
+        {settingsOpen ? (
+          <div className="status-panel">
+            <h1 className="status-label">Settings</h1>
+            <p className="status-message">Test mode and backend options will appear here.</p>
+            <div className="location-row">
+              <span className="location-label">Appearance</span>
+              <div className="appearance-options">
+                {(['system', 'dark', 'light'] as const).map((option) => (
+                  <button
+                    key={option}
+                    className="theme-button"
+                    type="button"
+                    aria-pressed={theme === option}
+                    onClick={() => setTheme(option)}
+                  >
+                    {option === 'system' ? 'System' : option === 'dark' ? 'Dark' : 'Light'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="location-row">
+              <span className="location-label">Location</span>
+              {locationStatus === 'granted' ? (
+                <span className="location-active"><span className="ready-dot" />Active</span>
+              ) : locationStatus === 'prompt' ? (
+                <button className="cancel-button" type="button" onClick={requestLocation}>Allow location</button>
+              ) : (
+                <p className="location-detail">
+                  {locationStatus === 'checking'
+                    ? 'Checking…'
+                    : locationStatus === 'denied'
+                      ? 'Blocked. Turn on location for this site in iPhone Settings → Safari → Location Services, or Settings → Privacy & Security → Location Services.'
+                      : 'Not available on this device.'}
+                </p>
+              )}
+            </div>
+            <button
+              className="cancel-button"
+              type="button"
+              onClick={() => {
+                setSettingsOpen(false)
+                setScreenState(settingsReturnTo)
+              }}
+            >
+              Close
+            </button>
+          </div>
+        ) : alertInfoOpen ? (
+          <div className="alert-info-panel">
+            <h1 className="status-label">Alert info</h1>
+            {alertHistory.length === 0 ? (
+              <p className="status-message">No alerts sent from this phone yet.</p>
+            ) : (
+              <ul className="alert-history-list">
+                {alertHistory.map((entry) => (
+                  <li className="alert-history-entry" key={entry.id}>
+                    <p className="status-message">{new Date(entry.created_at).toLocaleString()} · {entry.status}</p>
+                    <p className="status-message">
+                      {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
+                    </p>
+                    {entry.error && <p className="status-message">{entry.error}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              className="cancel-button"
+              type="button"
+              onClick={() => {
+                if (!reportOpen) {
+                  const history = readAlertHistory()
+                  setAlertHistory(history)
+                  setSelectedAlertId(history[0]?.id ?? null)
+                  setReportOpen(true)
+                } else {
+                  setReportOpen(false)
+                }
+                setReportMessage('')
+                setReportErrorDetail('')
+              }}
+            >
+              Report a problem
+            </button>
+            {reportOpen && (
+              <div className="report-form">
+                <span className="location-label">Which alert is this about?</span>
+                {alertHistory.length === 0 ? (
+                  <p className="status-message">No alerts from this phone yet. You can still describe the problem.</p>
+                ) : (
+                  <div className="report-alert-options">
+                    {alertHistory.slice(0, 5).map((entry) => (
+                      <button
+                        key={entry.id}
+                        className="report-alert-option"
+                        type="button"
+                        aria-pressed={selectedAlertId === entry.id}
+                        onClick={() => setSelectedAlertId(entry.id)}
+                      >
+                        <span className="report-alert-detail">
+                          {new Date(entry.created_at).toLocaleString()} · {entry.status}
+                        </span>
+                        {includeLocation && (
+                          <span className="report-alert-detail">
+                            {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <label className="location-label" htmlFor="report-description">What went wrong?</label>
+                <textarea
+                  id="report-description"
+                  className="report-textarea"
+                  maxLength={1000}
+                  value={reportText}
+                  onChange={(event) => {
+                    setReportText(event.target.value)
+                    setReportMessage('')
+                    setReportErrorDetail('')
+                    setReportMessageIsError(false)
+                  }}
+                />
+                <p className="status-message">{1000 - reportText.length} characters remaining</p>
+                <label className="location-label" htmlFor="report-email">Email (optional, so we can reply)</label>
+                <input
+                  id="report-email"
+                  className="report-email"
+                  type="email"
+                  value={reportEmail}
+                  onChange={(event) => {
+                    setReportEmail(event.target.value)
+                    setReportMessage('')
+                    setReportErrorDetail('')
+                    setReportMessageIsError(false)
+                  }}
+                />
+                {reportEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reportEmail.trim()) && (
+                  <p className="status-message report-message-error">Please enter a valid email or leave it empty.</p>
+                )}
+                <label className="report-location-option">
+                  <input
+                    type="checkbox"
+                    checked={includeLocation}
+                    onChange={(event) => setIncludeLocation(event.target.checked)}
+                  />
+                  Include my location in the report
+                </label>
+                <button
+                  className="cancel-button"
+                  type="button"
+                  disabled={reportText.trim().length < 5 || reportSubmitting || Boolean(reportEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reportEmail.trim()))}
+                  onClick={sendReport}
+                >
+                  {reportSubmitting ? 'Sending report…' : 'Send report'}
+                </button>
+                {reportMessage && (
+                  <p className={`status-message${reportMessageIsError ? ' report-message-error' : ''}`} role="status">
+                    {reportMessage}
+                  </p>
+                )}
+                {reportErrorDetail && (
+                  <p className="status-message report-message-error" role="status">{reportErrorDetail}</p>
+                )}
+              </div>
+            )}
+            <button
+              className="cancel-button"
+              type="button"
+              onClick={() => {
+                setAlertInfoOpen(false)
+                setReportOpen(false)
+                setScreenState(alertInfoReturnTo)
+              }}
+            >
+              Back
+            </button>
+          </div>
+        ) : screenState === 'idle' || screenState === 'holding' ? (
           <>
+            {IS_TEST_BUILD && <p className="test-banner">Beta test build. Alerts are marked as tests.</p>}
             <h1 className="action-title">Emergency SOS</h1>
             <p className="action-copy">{screenState === 'holding' ? 'Keep holding to arm' : 'Press and hold to call for help'}</p>
             <div className="sos-wrap">
               <svg className="progress-ring" viewBox="0 0 100 100" aria-hidden="true">
                 <circle className="ring-track" cx="50" cy="50" r="45" />
                 <circle
-                  className="ring-progress"
                   cx="50"
                   cy="50"
                   r="45"
                   strokeDasharray="283"
-                  strokeDashoffset={ringOffset}
+                  className={`ring-progress${screenState === 'holding' ? ' ring-active' : ''}`}
+                  strokeDashoffset="283"
                 />
               </svg>
               <button
@@ -263,24 +870,26 @@ export default function App() {
                 onPointerLeave={endHold}
                 onPointerCancel={endHold}
               >
-                SOS
+                <span className="sos-label">SOS</span>
+                {IS_TEST_BUILD && <span className="sos-test-label">(TEST)</span>}
               </button>
             </div>
-            <p className="hold-hint">Hold for 2 seconds to arm</p>
           </>
         ) : screenState === 'sending' ? (
           <div className="sending-card">
-            <h1 className="sending-title">Sending alert…</h1>
-            <div className="sending-track" role="progressbar" aria-label="Sending alert" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(sendProgress * 100)}>
-              <div className="sending-fill" style={{ width: `${sendProgress * 100}%` }} />
+            <h1 className="sending-title">{sendingStage}</h1>
+            <div className="sending-track" role="progressbar" aria-label="Sending alert" aria-valuemin={0} aria-valuemax={100}>
+              <div className={`sending-fill${screenState === 'sending' ? ' bar-active' : ''}`} />
             </div>
-            <button className="cancel-button" type="button" onClick={cancel}>Cancel</button>
+            {cancelWindowActive && sendingStage !== 'Approving…' && (
+              <button className="cancel-button" type="button" onClick={cancel}>Cancel</button>
+            )}
           </div>
         ) : (
           <div className="status-panel">
             <h1 className="status-label">
               {screenState === 'locating'
-                ? 'Getting location…'
+                ? 'Locating…'
                 : screenState === 'submitting'
                   ? 'Sending…'
                   : screenState === 'sent'
@@ -305,7 +914,6 @@ export default function App() {
         <button className="nav-button" type="button">Check-in</button>
         <button className="nav-button" type="button">Messages</button>
         <button className="nav-button" type="button">Profile</button>
-        <button className="nav-button" type="button">Settings</button>
       </nav>
     </main>
   )
