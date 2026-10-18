@@ -86,6 +86,7 @@ export default function App() {
   const [alertInfoReturnTo, setAlertInfoReturnTo] = useState<ScreenState>('idle')
   const [alertHistory, setAlertHistory] = useState<AlertHistoryEntry[]>(readAlertHistory)
   const [reportOpen, setReportOpen] = useState(false)
+  const [reportAlertListOpen, setReportAlertListOpen] = useState(false)
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => alertHistory[0]?.id ?? null)
   const [reportText, setReportText] = useState('')
   const [reportEmail, setReportEmail] = useState('')
@@ -583,6 +584,8 @@ export default function App() {
         .alert-history-list { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
         .alert-history-entry { padding-bottom: 12px; border-bottom: 1px solid var(--border); }
         .report-form { display: grid; gap: 12px; }
+        .report-selected-alert { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+        .report-alert-picker { display: grid; gap: 8px; }
         .report-textarea { width: 100%; min-height: 90px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-primary); background: var(--card-background); font: inherit; resize: vertical; }
         .report-email { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-primary); background: var(--card-background); font: inherit; }
         .report-location-option { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 14px; }
@@ -714,67 +717,64 @@ export default function App() {
             </button>
           </div>
         ) : alertInfoOpen ? (
-          <div className="alert-info-panel">
-            <h1 className="status-label">Alert info</h1>
-            {alertHistory.length === 0 ? (
-              <p className="status-message">No alerts sent from this phone yet.</p>
-            ) : (
-              <ul className="alert-history-list">
-                {alertHistory.map((entry) => (
-                  <li className="alert-history-entry" key={entry.id}>
-                    <p className="status-message">{new Date(entry.created_at).toLocaleString()} · {entry.status}</p>
-                    <p className="status-message">
-                      {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
-                    </p>
-                    {entry.error && <p className="status-message">{entry.error}</p>}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <button
-              className="cancel-button"
-              type="button"
-              onClick={() => {
-                if (!reportOpen) {
-                  const history = readAlertHistory()
-                  setAlertHistory(history)
-                  setSelectedAlertId(history[0]?.id ?? null)
-                  setReportOpen(true)
-                } else {
-                  setReportOpen(false)
-                }
-                setReportMessage('')
-                setReportErrorDetail('')
-              }}
-            >
-              Report a problem
-            </button>
-            {reportOpen && (
+          reportOpen ? (
+            <div className="alert-info-panel">
+              <h1 className="status-label">Report a problem</h1>
+              <p className="status-message">Tell us what went wrong. Your message goes to the developer.</p>
               <div className="report-form">
                 <span className="location-label">Which alert is this about?</span>
                 {alertHistory.length === 0 ? (
                   <p className="status-message">No alerts from this phone yet. You can still describe the problem.</p>
                 ) : (
-                  <div className="report-alert-options">
-                    {alertHistory.slice(0, 5).map((entry) => (
-                      <button
-                        key={entry.id}
-                        className="report-alert-option"
-                        type="button"
-                        aria-pressed={selectedAlertId === entry.id}
-                        onClick={() => setSelectedAlertId(entry.id)}
-                      >
-                        <span className="report-alert-detail">
-                          {new Date(entry.created_at).toLocaleString()} · {entry.status}
-                        </span>
-                        {includeLocation && (
-                          <span className="report-alert-detail">
-                            {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    {(() => {
+                      const selectedAlert = alertHistory.find((entry) => entry.id === selectedAlertId)
+                      return selectedAlert ? (
+                        <div className="report-selected-alert">
+                          <p className="status-message">
+                            {new Date(selectedAlert.created_at).toLocaleString()} · {selectedAlert.status}
+                          </p>
+                          {includeLocation && (
+                            <p className="status-message">
+                              {selectedAlert.latitude.toFixed(5)}, {selectedAlert.longitude.toFixed(5)} · ±{Math.round(selectedAlert.accuracy_m)} m
+                            </p>
+                          )}
+                        </div>
+                      ) : null
+                    })()}
+                    <button
+                      className="cancel-button"
+                      type="button"
+                      onClick={() => setReportAlertListOpen((open) => !open)}
+                    >
+                      {reportAlertListOpen ? 'Cancel' : 'Change'}
+                    </button>
+                    {reportAlertListOpen && (
+                      <div className="report-alert-picker">
+                        {alertHistory.slice(0, 5).map((entry) => (
+                          <button
+                            key={entry.id}
+                            className="report-alert-option"
+                            type="button"
+                            aria-pressed={selectedAlertId === entry.id}
+                            onClick={() => {
+                              setSelectedAlertId(entry.id)
+                              setReportAlertListOpen(false)
+                            }}
+                          >
+                            <span className="report-alert-detail">
+                              {new Date(entry.created_at).toLocaleString()} · {entry.status}
+                            </span>
+                            {includeLocation && (
+                              <span className="report-alert-detail">
+                                {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
                 <label className="location-label" htmlFor="report-description">What went wrong?</label>
                 <textarea
@@ -831,19 +831,64 @@ export default function App() {
                   <p className="status-message report-message-error" role="status">{reportErrorDetail}</p>
                 )}
               </div>
-            )}
-            <button
-              className="cancel-button"
-              type="button"
-              onClick={() => {
-                setAlertInfoOpen(false)
-                setReportOpen(false)
-                setScreenState(alertInfoReturnTo)
-              }}
-            >
-              Back
-            </button>
-          </div>
+              <button
+                className="cancel-button"
+                type="button"
+                onClick={() => {
+                  setAlertInfoOpen(false)
+                  setReportOpen(false)
+                  setReportAlertListOpen(false)
+                  setScreenState(alertInfoReturnTo)
+                }}
+              >
+                Back
+              </button>
+            </div>
+          ) : (
+            <div className="alert-info-panel">
+              <h1 className="status-label">Alert info</h1>
+              {alertHistory.length === 0 ? (
+                <p className="status-message">No alerts sent from this phone yet.</p>
+              ) : (
+                <ul className="alert-history-list">
+                  {alertHistory.map((entry) => (
+                    <li className="alert-history-entry" key={entry.id}>
+                      <p className="status-message">{new Date(entry.created_at).toLocaleString()} · {entry.status}</p>
+                      <p className="status-message">
+                        {entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)} · ±{Math.round(entry.accuracy_m)} m
+                      </p>
+                      {entry.error && <p className="status-message">{entry.error}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <button
+                className="cancel-button"
+                type="button"
+                onClick={() => {
+                  const history = readAlertHistory()
+                  setAlertHistory(history)
+                  setSelectedAlertId(history[0]?.id ?? null)
+                  setReportAlertListOpen(false)
+                  setReportOpen(true)
+                  setReportMessage('')
+                  setReportErrorDetail('')
+                }}
+              >
+                Report a problem
+              </button>
+              <button
+                className="cancel-button"
+                type="button"
+                onClick={() => {
+                  setAlertInfoOpen(false)
+                  setScreenState(alertInfoReturnTo)
+                }}
+              >
+                Back
+              </button>
+            </div>
+          )
         ) : screenState === 'idle' || screenState === 'holding' ? (
           <>
             {IS_TEST_BUILD && <p className="test-banner">Beta test build. Alerts are marked as tests.</p>}
