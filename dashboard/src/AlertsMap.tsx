@@ -15,6 +15,9 @@ export type Alert = {
   status: string
   is_test: boolean
   device_id: string
+  seq_number: number | null
+  duplicate_score: number | null
+  duplicate_of: string | null
 }
 
 export type UserRole = 'admin' | 'developer' | 'rescue' | string
@@ -107,7 +110,7 @@ export default function AlertsMap({
     for (let from = 0; ; from += ALERTS_FETCH_SIZE) {
       const { data, error } = await supabase
         .from('alerts')
-        .select('id, created_at, type, priority, latitude, longitude, accuracy_m, status, is_test, device_id')
+        .select('id, created_at, type, priority, latitude, longitude, accuracy_m, status, is_test, device_id, seq_number, duplicate_score, duplicate_of')
         .order('created_at', { ascending: false })
         .order('id', { ascending: true })
         .range(from, from + ALERTS_FETCH_SIZE - 1)
@@ -420,28 +423,49 @@ export default function AlertsMap({
             <p style={{ margin: 0, color: '#626863' }}>No alerts to show.</p>
           ) : alertsLoaded && !alertsError && visibleAlerts.length === 0 ? (
             <p style={{ margin: 0, color: '#626863' }}>No alerts match these filters.</p>
-          ) : displayedAlerts.map((alert) => (
-            <button
-              key={alert.id}
-              type="button"
-              onClick={() => {
-                if (typeof alert.latitude === 'number' && typeof alert.longitude === 'number') {
-                  setFocusedAlertId(alert.id)
-                }
-              }}
-              disabled={typeof alert.latitude !== 'number' || typeof alert.longitude !== 'number'}
-              style={{ width: '100%', padding: 12, border: '1px solid #dedbd5', borderRadius: 8, background: '#fff', color: '#202321', textAlign: 'left', cursor: 'pointer' }}
-            >
-              <span style={{ display: 'block', marginBottom: 4, color: '#626863', fontSize: 13 }}>
-                {formatTime(alert.created_at)} · {alert.type} · {alert.status}
-              </span>
-              <span style={{ display: 'block' }}>
-                {typeof alert.latitude === 'number' && typeof alert.longitude === 'number'
-                  ? `${alert.latitude.toFixed(5)}, ${alert.longitude.toFixed(5)}`
-                  : 'Coordinates unavailable'}
-              </span>
-            </button>
-          ))}
+          ) : displayedAlerts.map((alert) => {
+            const earlierAlert = alert.duplicate_of
+              ? alerts.find((item) => item.id === alert.duplicate_of)
+              : undefined
+            const duplicateLabel = alert.duplicate_score !== null && alert.duplicate_score >= 80
+              ? 'Likely repeat'
+              : alert.duplicate_score !== null && alert.duplicate_score >= 50
+                ? 'Possible repeat'
+                : null
+
+            return (
+              <button
+                key={alert.id}
+                type="button"
+                onClick={() => {
+                  if (typeof alert.latitude === 'number' && typeof alert.longitude === 'number') {
+                    setFocusedAlertId(alert.id)
+                  }
+                }}
+                disabled={typeof alert.latitude !== 'number' || typeof alert.longitude !== 'number'}
+                style={{ width: '100%', padding: 12, border: '1px solid #dedbd5', borderRadius: 8, background: '#fff', color: '#202321', textAlign: 'left', cursor: 'pointer' }}
+              >
+                <span style={{ display: 'block', marginBottom: 4, color: '#626863', fontSize: 13 }}>
+                  {formatTime(alert.created_at)} · {alert.type} · {alert.status}
+                </span>
+                <span style={{ display: 'block' }}>
+                  {typeof alert.latitude === 'number' && typeof alert.longitude === 'number'
+                    ? `${alert.latitude.toFixed(5)}, ${alert.longitude.toFixed(5)}`
+                    : 'Coordinates unavailable'}
+                </span>
+                {duplicateLabel && (
+                  <span style={{ display: 'inline-flex', marginTop: 8, padding: '3px 7px', border: '1px solid #dedbd5', borderRadius: 999, background: '#f4f2ee', color: '#626863', fontSize: 11, fontWeight: 650 }}>
+                    {duplicateLabel} ({alert.duplicate_score})
+                  </span>
+                )}
+                {earlierAlert && typeof earlierAlert.seq_number === 'number' && (
+                  <span style={{ display: 'block', marginTop: 6, color: '#626863', fontSize: 12 }}>
+                    Earlier alert #{earlierAlert.seq_number}
+                  </span>
+                )}
+              </button>
+            )
+          })}
           {displayedAlerts.length < visibleAlerts.length && (
             <button
               type="button"
