@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 
-const IS_TEST_BUILD = true
+const IS_TEST_BUILD = import.meta.env.VITE_IS_TEST_BUILD === 'true'
 const DEV_FAST = import.meta.env.VITE_DEV_FAST_MODE === 'true' && IS_TEST_BUILD
 const HOLD_MS = DEV_FAST ? 300 : 1500
 const SEND_DELAY_MS = DEV_FAST ? 500 : 4000
 
-type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
+type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error' | 'rate-limited'
 type LocationStatus = 'checking' | 'granted' | 'prompt' | 'denied' | 'unsupported'
 type Theme = 'system' | 'dark' | 'light'
 type PrefetchedFix = {
@@ -24,7 +24,7 @@ type AlertHistoryEntry = {
   longitude: number
   accuracy_m: number
   is_test: boolean
-  status: 'sent' | 'failed'
+  status: 'sent' | 'failed' | 'rate-limited'
   error: string | null
 }
 
@@ -41,8 +41,21 @@ function isAlertHistoryEntry(entry: unknown): entry is AlertHistoryEntry {
     && typeof item.longitude === 'number'
     && typeof item.accuracy_m === 'number'
     && typeof item.is_test === 'boolean'
-    && (item.status === 'sent' || item.status === 'failed')
+    && (item.status === 'sent' || item.status === 'failed' || item.status === 'rate-limited')
     && (item.error === null || typeof item.error === 'string')
+}
+
+function getRateLimitSeconds(error: unknown): number | null {
+  if (typeof error !== 'object' || error === null) return null
+
+  const value = error as { hint?: unknown; details?: unknown; message?: unknown }
+  const isRateLimit = value.hint === 'rate_limit'
+    || (typeof value.message === 'string' && value.message.startsWith('Rate limit exceeded'))
+  if (!isRateLimit) return null
+  if (value.hint !== 'rate_limit' || typeof value.details !== 'string') return 60
+
+  const retryAfter = value.details.match(/retry_after_seconds=(\d+)/)
+  return retryAfter ? Number(retryAfter[1]) : 60
 }
 
 function readAlertHistory(): AlertHistoryEntry[] {
@@ -106,6 +119,7 @@ export default function App() {
   })
   const [locationStatus, setLocationStatus] = useState<LocationStatus>('checking')
   const [locationMessage, setLocationMessage] = useState('')
+  const [rateLimitRemaining, setRateLimitRemaining] = useState<number | null>(null)
   const [sendingStage, setSendingStage] = useState('Processing…')
   const [cancelWindowActive, setCancelWindowActive] = useState(false)
   const holdTimeout = useRef<number | null>(null)
@@ -116,6 +130,20 @@ export default function App() {
   const prefetchPending = useRef(false)
   const attemptId = useRef(0)
   const sendWindowElapsed = useRef(false)
+
+  useEffect(() => {
+    if (screenState !== 'rate-limited' || rateLimitRemaining === null) return
+    if (rateLimitRemaining === 0) {
+      setRateLimitRemaining(null)
+      setScreenState('idle')
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      setRateLimitRemaining((remaining) => remaining === null ? null : Math.max(0, remaining - 1))
+    }, 1000)
+    return () => window.clearTimeout(timeout)
+  }, [rateLimitRemaining, screenState])
 
   const clearHold = () => {
     if (holdTimeout.current !== null) {
@@ -187,6 +215,14 @@ export default function App() {
 
       if (attemptId.current !== currentAttempt) return
       if (error) {
+        const retryAfterSeconds = getRateLimitSeconds(error)
+        if (retryAfterSeconds !== null) {
+          recordAlert(fix, 'rate-limited', null)
+          setRateLimitRemaining(retryAfterSeconds)
+          setCancelWindowActive(false)
+          setScreenState('rate-limited')
+          return
+        }
         recordAlert(fix, 'failed', error.message)
         setLocationMessage(error.message)
         setScreenState('insert-error')
@@ -197,6 +233,14 @@ export default function App() {
       setScreenState('sent')
     } catch (error) {
       if (attemptId.current !== currentAttempt) return
+      const retryAfterSeconds = getRateLimitSeconds(error)
+      if (retryAfterSeconds !== null) {
+        recordAlert(fix, 'rate-limited', null)
+        setRateLimitRemaining(retryAfterSeconds)
+        setCancelWindowActive(false)
+        setScreenState('rate-limited')
+        return
+      }
       const message = error instanceof Error ? error.message : String(error)
       recordAlert(fix, 'failed', message)
       setLocationMessage(message)
@@ -462,13 +506,27 @@ export default function App() {
           : null,
       })
 
-      if (error) throw new Error(error.message)
+      if (error) {
+        const retryAfterSeconds = getRateLimitSeconds(error)
+        if (retryAfterSeconds !== null) {
+          setReportMessage(`Too many reports in a short time. Try again in ${retryAfterSeconds} seconds.`)
+          setReportMessageIsError(true)
+          return
+        }
+        throw new Error(error.message)
+      }
 
       setReportText('')
       setReportEmail('')
       setIncludeLocation(false)
       setReportMessage('Report sent. Thank you.')
     } catch (error) {
+      const retryAfterSeconds = getRateLimitSeconds(error)
+      if (retryAfterSeconds !== null) {
+        setReportMessage(`Too many reports in a short time. Try again in ${retryAfterSeconds} seconds.`)
+        setReportMessageIsError(true)
+        return
+      }
       const message = error instanceof Error ? error.message : String(error)
       try {
         await navigator.clipboard.writeText(report)
@@ -600,6 +658,8 @@ export default function App() {
         .status-label { margin: 0 0 8px; font-size: 18px; font-weight: 700; }
         .status-message { margin: 0; color: var(--text-muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
         .status-message-error { color: #c7352c; }
+        .rate-limit-panel { display: grid; gap: 16px; }
+        .call-112-button { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 68px; border-radius: 12px; color: #fff; background: #c7352c; font-size: 22px; font-weight: 750; text-decoration: none; }
         .location-row { margin: 24px 0; text-align: left; }
         .location-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 650; }
         .location-detail { margin: 0; color: var(--text-muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -935,6 +995,16 @@ export default function App() {
             {cancelWindowActive && sendingStage !== 'Approving…' && (
               <button className="cancel-button" type="button" onClick={cancel}>Cancel</button>
             )}
+          </div>
+        ) : screenState === 'rate-limited' ? (
+          <div className="status-panel rate-limit-panel">
+            <p className="status-message">
+              Your help request was already received. You sent several alerts in the last minute and rescuers can see them. You can send another in {rateLimitRemaining ?? 60} seconds. If you are in immediate danger, call 112.
+            </p>
+            <a className="call-112-button" href="tel:112">Call 112</a>
+            <p className="status-message" role="status" aria-live="polite">
+              SOS available in {rateLimitRemaining ?? 60} seconds.
+            </p>
           </div>
         ) : (
           <div className="status-panel">
