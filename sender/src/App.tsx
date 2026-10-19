@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 
 const IS_TEST_BUILD = true
-const HOLD_MS = 1500
-const SEND_DELAY_MS = 4000
+const DEV_FAST = import.meta.env.VITE_DEV_FAST_MODE === 'true' && IS_TEST_BUILD
+const HOLD_MS = DEV_FAST ? 300 : 1500
+const SEND_DELAY_MS = DEV_FAST ? 500 : 4000
 
 type ScreenState = 'idle' | 'holding' | 'sending' | 'locating' | 'submitting' | 'sent' | 'error' | 'insert-error'
 type LocationStatus = 'checking' | 'granted' | 'prompt' | 'denied' | 'unsupported'
@@ -524,6 +525,8 @@ export default function App() {
         }
         .topline { display: flex; align-items: center; justify-content: space-between; min-height: 42px; }
         .brand { font-size: 14px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+        .brand-group { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+        .dev-fast-badge { display: inline-flex; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-primary); background: var(--selected-background); font-size: 9px; font-weight: 750; letter-spacing: .07em; line-height: 1.2; white-space: nowrap; }
         .ready-indicator { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
         .ready-dot { width: 8px; height: 8px; border-radius: 50%; background: #4c9b6a; box-shadow: 0 0 0 3px #dce9df; }
         .action-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; padding: 24px 0; text-align: center; }
@@ -628,7 +631,10 @@ export default function App() {
       `}</style>
 
       <header className="topline">
-        <span className="brand">Spas Sender</span>
+        <div className="brand-group">
+          <span className="brand">Spas Sender</span>
+          {DEV_FAST && <span className="dev-fast-badge">DEV FAST MODE</span>}
+        </div>
         <div className="header-actions">
           <span className="ready-indicator"><span className="ready-dot" />Ready</span>
           {(screenState === 'idle' || screenState === 'sent' || screenState === 'error' || screenState === 'insert-error') && (
@@ -700,7 +706,7 @@ export default function App() {
                   {locationStatus === 'checking'
                     ? 'Checking…'
                     : locationStatus === 'denied'
-                      ? 'Blocked. Turn on location for this site in iPhone Settings → Safari → Location Services, or Settings → Privacy & Security → Location Services.'
+                      ? 'Blocked. Turn on location for this site in your device settings → Safari → Location Services, or Settings → Privacy & Security → Location Services.'
                       : 'Not available on this device.'}
                 </p>
               )}
@@ -724,7 +730,7 @@ export default function App() {
               <div className="report-form">
                 <span className="location-label">Which alert is this about?</span>
                 {alertHistory.length === 0 ? (
-                  <p className="status-message">No alerts from this phone yet. You can still describe the problem.</p>
+                  <p className="status-message">No alerts from this device yet. You can still describe the problem.</p>
                 ) : (
                   <>
                     {(() => {
@@ -848,7 +854,7 @@ export default function App() {
             <div className="alert-info-panel">
               <h1 className="status-label">Alert info</h1>
               {alertHistory.length === 0 ? (
-                <p className="status-message">No alerts sent from this phone yet.</p>
+                <p className="status-message">No alerts sent from this device yet.</p>
               ) : (
                 <ul className="alert-history-list">
                   {alertHistory.map((entry) => (
