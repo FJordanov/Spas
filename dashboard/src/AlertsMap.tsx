@@ -34,6 +34,8 @@ type AlertsMapProps = {
 }
 
 const SOFIA: LatLngExpression = [42.6977, 23.3219]
+const ALERTS_PAGE_SIZE = 50
+const ALERTS_FETCH_SIZE = 1000
 const TIME_FILTER_MS: Record<Exclude<AlertTimeFilter, 'all'>, number> = {
   '1h': 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
@@ -93,6 +95,7 @@ export default function AlertsMap({
   const [timeFilter, setTimeFilter] = useState<AlertTimeFilter>('all')
   const [filtersAppliedAt, setFiltersAppliedAt] = useState(0)
   const [focusedAlertId, setFocusedAlertId] = useState<string | null>(null)
+  const [listLimit, setListLimit] = useState(ALERTS_PAGE_SIZE)
   const [isLoading, setIsLoading] = useState(true)
   const [alertsLoaded, setAlertsLoaded] = useState(false)
   const [alertsError, setAlertsError] = useState('')
@@ -100,16 +103,27 @@ export default function AlertsMap({
   const [tileError, setTileError] = useState(false)
 
   const fetchAlerts = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('alerts')
-      .select('id, created_at, type, priority, latitude, longitude, accuracy_m, status, is_test, device_id')
-      .order('created_at', { ascending: false })
-      .limit(100)
+    const allAlerts: Alert[] = []
+    for (let from = 0; ; from += ALERTS_FETCH_SIZE) {
+      const { data, error } = await supabase
+        .from('alerts')
+        .select('id, created_at, type, priority, latitude, longitude, accuracy_m, status, is_test, device_id')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(from, from + ALERTS_FETCH_SIZE - 1)
 
-    return { data, error }
+      if (error) return { data: null, error }
+
+      const chunk = (data ?? []) as Alert[]
+      allAlerts.push(...chunk)
+      if (chunk.length < ALERTS_FETCH_SIZE) break
+    }
+
+    return { data: allAlerts, error: null }
   }, [])
 
   const loadAlerts = useCallback(async () => {
+    setListLimit(ALERTS_PAGE_SIZE)
     setIsLoading(true)
     setAlertsLoaded(false)
     setAlertsError('')
@@ -178,6 +192,7 @@ export default function AlertsMap({
       return true
     })
   }, [alerts, alertsLoaded, canViewTestAlerts, showTestAlerts, typeFilter, statusFilter, timeFilter, filtersAppliedAt])
+  const displayedAlerts = visibleAlerts.slice(0, listLimit)
   const visibleAlertsWithCoordinates = visibleAlerts.filter(
     (alert): alert is Alert & { latitude: number; longitude: number } =>
       typeof alert.latitude === 'number'
@@ -198,6 +213,7 @@ export default function AlertsMap({
     setStatusFilter('all')
     setTimeFilter('all')
     setFocusedAlertId(null)
+    setListLimit(ALERTS_PAGE_SIZE)
   }
   const selectStyle = {
     minHeight: 38,
@@ -250,6 +266,7 @@ export default function AlertsMap({
                   setFiltersAppliedAt(Date.now())
                   onShowTestAlertsChange(event.target.checked)
                   setFocusedAlertId(null)
+                  setListLimit(ALERTS_PAGE_SIZE)
                 }}
               />
               Show test alerts
@@ -346,6 +363,7 @@ export default function AlertsMap({
                 setFiltersAppliedAt(Date.now())
                 setTypeFilter(event.target.value as AlertTypeFilter)
                 setFocusedAlertId(null)
+                setListLimit(ALERTS_PAGE_SIZE)
               }} style={selectStyle}>
                 <option value="all">All types</option>
                 <option value="sos">SOS</option>
@@ -359,6 +377,7 @@ export default function AlertsMap({
                 setFiltersAppliedAt(Date.now())
                 setStatusFilter(event.target.value as AlertStatusFilter)
                 setFocusedAlertId(null)
+                setListLimit(ALERTS_PAGE_SIZE)
               }} style={selectStyle}>
                 <option value="all">All statuses</option>
                 <option value="new">New</option>
@@ -371,6 +390,7 @@ export default function AlertsMap({
                 setFiltersAppliedAt(Date.now())
                 setTimeFilter(event.target.value as AlertTimeFilter)
                 setFocusedAlertId(null)
+                setListLimit(ALERTS_PAGE_SIZE)
               }} style={selectStyle}>
                 <option value="all">All time</option>
                 <option value="1h">Last hour</option>
@@ -400,7 +420,7 @@ export default function AlertsMap({
             <p style={{ margin: 0, color: '#626863' }}>No alerts to show.</p>
           ) : alertsLoaded && !alertsError && visibleAlerts.length === 0 ? (
             <p style={{ margin: 0, color: '#626863' }}>No alerts match these filters.</p>
-          ) : visibleAlerts.map((alert) => (
+          ) : displayedAlerts.map((alert) => (
             <button
               key={alert.id}
               type="button"
@@ -422,6 +442,15 @@ export default function AlertsMap({
               </span>
             </button>
           ))}
+          {displayedAlerts.length < visibleAlerts.length && (
+            <button
+              type="button"
+              onClick={() => setListLimit((current) => current + ALERTS_PAGE_SIZE)}
+              style={{ minHeight: 44, padding: '8px 14px', border: '1px solid #dedbd5', borderRadius: 8, background: '#fff', color: '#202321', fontWeight: 600, cursor: 'pointer' }}
+            >
+              Load more
+            </button>
+          )}
         </div>
       </div>
     </section>
