@@ -99,6 +99,7 @@ export default function App() {
   const [alertInfoOpen, setAlertInfoOpen] = useState(false)
   const [alertInfoReturnTo, setAlertInfoReturnTo] = useState<ScreenState>('idle')
   const [alertHistory, setAlertHistory] = useState<AlertHistoryEntry[]>(readAlertHistory)
+  const [showAllAlertHistory, setShowAllAlertHistory] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
   const [reportAlertListOpen, setReportAlertListOpen] = useState(false)
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(() => alertHistory[0]?.id ?? null)
@@ -130,6 +131,13 @@ export default function App() {
   const prefetchPending = useRef(false)
   const attemptId = useRef(0)
   const sendWindowElapsed = useRef(false)
+
+  const sortedAlertHistory = [...alertHistory].sort(
+    (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
+  )
+  const displayedAlertHistory = showAllAlertHistory
+    ? sortedAlertHistory
+    : sortedAlertHistory.slice(0, 3)
 
   useEffect(() => {
     if (screenState !== 'rate-limited' || rateLimitRemaining === null) return
@@ -917,7 +925,7 @@ export default function App() {
                 <p className="status-message">No alerts sent from this device yet.</p>
               ) : (
                 <ul className="alert-history-list">
-                  {alertHistory.map((entry) => (
+                  {displayedAlertHistory.map((entry) => (
                     <li className="alert-history-entry" key={entry.id}>
                       <p className="status-message">{new Date(entry.created_at).toLocaleString()} · {entry.status}</p>
                       <p className="status-message">
@@ -927,6 +935,15 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {alertHistory.length > 3 && (
+                <button
+                  className="cancel-button"
+                  type="button"
+                  onClick={() => setShowAllAlertHistory((showAll) => !showAll)}
+                >
+                  {showAllAlertHistory ? 'Show less' : `See all (${alertHistory.length})`}
+                </button>
               )}
               <button
                 className="cancel-button"
