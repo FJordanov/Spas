@@ -999,7 +999,7 @@ export default function App() {
         ) : screenState === 'rate-limited' ? (
           <div className="status-panel rate-limit-panel">
             <p className="status-message">
-              Your help request was already received. You sent several alerts in the last minute and rescuers can see them. You can send another in {rateLimitRemaining ?? 60} seconds. If you are in immediate danger, call 112.
+              Your alerts were already sent. You can send another in {rateLimitRemaining ?? 60} seconds. If you are in immediate danger, call 112.
             </p>
             <a className="call-112-button" href="tel:112">Call 112</a>
             <p className="status-message" role="status" aria-live="polite">
