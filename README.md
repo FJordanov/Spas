@@ -86,4 +86,21 @@ Run these in the `dashboard` folder, using the same `.env.local` approach.
 <details>
 <summary><b>🔒 Security notes</b></summary>
 
-- The Supabase **anon (public) key** is meant to be public. Security comes from the database rules,
+- The Supabase **anon (public) key** is meant to be public. Security comes from the database rules, not from hiding that key.
+- Never commit a `service_role` or `sb_secret` key. Check with: `git grep -nE "service_role|sb_secret"`
+- Database changes are made through migration files and tested on the test project first.
+
+</details>
+
+<details>
+<summary><b>🤝 Contributing</b></summary>
+
+Only the project owner commits to this repository. Changes go through pull requests into `dev`, and `main` is the live version.
+
+</details>
+
+---
+
+## ⚖️ Legal
+
+Terms of Use and the Privacy Policy are **drafts** and must be reviewed by a qualified lawyer before real users use the app. Licence: see [LICENSE](LICENSE).
