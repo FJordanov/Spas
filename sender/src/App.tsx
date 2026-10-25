@@ -138,6 +138,29 @@ export default function App() {
   const displayedAlertHistory = showAllAlertHistory
     ? sortedAlertHistory
     : sortedAlertHistory.slice(0, 3)
+  const alertInProgress = cancelWindowActive
+    || screenState === 'sending'
+    || screenState === 'locating'
+    || screenState === 'submitting'
+  const canOpenInfoScreens = !alertInProgress
+    && (screenState === 'idle' || screenState === 'sent' || screenState === 'error' || screenState === 'insert-error' || screenState === 'rate-limited')
+
+  const openAlertInfo = () => {
+    if (!canOpenInfoScreens || alertInfoOpen) return
+    setAlertInfoReturnTo(settingsOpen ? settingsReturnTo : screenState)
+    const history = readAlertHistory()
+    setAlertHistory(history)
+    setSelectedAlertId(history[0]?.id ?? null)
+    setSettingsOpen(false)
+    setAlertInfoOpen(true)
+  }
+
+  const openSettings = () => {
+    if (!canOpenInfoScreens || settingsOpen) return
+    setSettingsReturnTo(alertInfoOpen ? alertInfoReturnTo : screenState)
+    setAlertInfoOpen(false)
+    setSettingsOpen(true)
+  }
 
   useEffect(() => {
     if (screenState !== 'rate-limited' || rateLimitRemaining === null) return
@@ -600,8 +623,9 @@ export default function App() {
         .action-copy { min-height: 22px; margin: 0 0 34px; color: var(--text-muted); font-size: 14px; }
         .test-banner { margin: 0 0 12px; color: var(--text-muted); font-size: 13px; text-align: center; }
         .header-actions { display: flex; align-items: center; gap: 12px; }
-        .settings-button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-primary); background: var(--page-background); font-size: 19px; line-height: 1; }
-        .settings-button:disabled { opacity: .5; }
+        .settings-button { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-primary); background: var(--page-background); font-size: 19px; line-height: 1; }
+        .settings-button[aria-pressed="true"] { border-color: var(--text-muted); background: var(--selected-background); }
+        .settings-button:disabled { opacity: .4; }
         .sos-wrap { position: relative; display: grid; place-items: center; width: 244px; height: 244px; }
         .progress-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; pointer-events: none; }
         .ring-track, .ring-progress { fill: none; stroke-width: 5; }
@@ -705,22 +729,16 @@ export default function App() {
         </div>
         <div className="header-actions">
           <span className="ready-indicator"><span className="ready-dot" />Ready</span>
-          {(screenState === 'idle' || screenState === 'sent' || screenState === 'error' || screenState === 'insert-error') && (
+          {(canOpenInfoScreens || alertInProgress) && (
             <>
               <button
                 className="settings-button"
                 type="button"
                 aria-label="Alert info"
                 title="Alert info"
-                disabled={alertInfoOpen || settingsOpen}
-                onClick={() => {
-                  if (alertInfoOpen || settingsOpen) return
-                  setAlertInfoReturnTo(screenState)
-                  const history = readAlertHistory()
-                  setAlertHistory(history)
-                  setSelectedAlertId(history[0]?.id ?? null)
-                  setAlertInfoOpen(true)
-                }}
+                aria-pressed={alertInfoOpen}
+                disabled={!canOpenInfoScreens}
+                onClick={openAlertInfo}
               >
                 <span aria-hidden="true">ⓘ</span>
               </button>
@@ -728,12 +746,9 @@ export default function App() {
                 className="settings-button"
                 type="button"
                 aria-label="Settings"
-                disabled={settingsOpen || alertInfoOpen}
-                onClick={() => {
-                  if (settingsOpen || alertInfoOpen) return
-                  setSettingsReturnTo(screenState)
-                  setSettingsOpen(true)
-                }}
+                aria-pressed={settingsOpen}
+                disabled={!canOpenInfoScreens}
+                onClick={openSettings}
               >
                 <span aria-hidden="true">⚙</span>
               </button>
